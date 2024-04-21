@@ -1,0 +1,269 @@
+---
+title: "Project on co-clustering of functional data"
+author: "Kwaku Agyapong"
+date: "2024-03-07"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Questions on the article 
+
+1. What are the variables which are recorded? Why are we speaking of multivariate functional data?
+# Answer: There are five (5) variables being recorded namely: 3 Pollutants - Particulate Matter (PM10), Nitrogen dioxide (NO2), Ozone (O3) and 2 Meteorological factors - Pressure and Temperature. These are multivariate functional data because they are multiple quantitative entities that are evolving over a period of time and collected/observed simultaneously for the same individual.
+
+2. Why are are the authors speaking of co-clustering? (What are the clusters in rows and in columns?)
+#Answer: In order to analyse multivariate data, there is the need to identify subgroups within the data that share the same characteristics and co-clustering happens to be one of the clustering techniques for multivariate functional data. In this study, the authors build a matrix with 357 rows which represent areas, and 313 columns representing weeks. The idea is to cluster the rows into homogenous groups of areas (sharing same cahararistics) and the columns into homogenous groups of weeks also sharing the same characteristics. This is the co-clustering the authors speak of and it will identify homogenous groups of areas and weeks  which have the same behaviour given different environmental variables
+
+3. The article proposes to split the 6-year period into weeks of 7 days. What kind of information may be lost by making this splitting?
+#Answer: Temperature varies dynamically over a period of time. For instance it may be vary on different days as well as different times of the day. Splittinng the data into weeks of 7 days will mask this effect. Temporal and spatial dependencies are bound to arise as poolution levels and temperature may well vary throughout the day and their effects will be masked. Also looking at the bigger picture, a representative mean although difficult for experts to interpret would provide a good explanation for the clusters/areas in terms of pollutants and temperature over the period of six years or more and provide a basis for future trend of pollution.
+
+In the article, the authors say p.8: 
+
+*It is not possible to extend this approach directly to the multivariate case by concatenating the coefficients of the different functional variables, because this will increase drastically the coefficient vectors’ dimensions, and thus will lead to the well-known curse of dimensionality issue.*
+
+
+4. Explain why it would drastically increase the number of coefficients.
+#Answer: The functional expressions of the multivariate functional curves are not known and we only have access to discrete observations at a finite set of times. We reconstruct the functional form by assuming the observations are decomposed into a finite dimensional space spanned by a basis of functions and each curve can be expressed as a linear combination of basis functions. Estimation of the basis expansion coefficients is done by least squares smoothing and it contains the coefficients for the rows and columns which corresponds to the concatenation of coefficients for all the functional variables. For each dimension of the multivariate functional variables we have a number of corresponding basis functions.But probability density for functional variables is not well defined and depending on the application, the period of observation [0,T] can be long, and the number of basis functions used for reconstruction can be large and thus the coefficient vectors may live in high dimensions (increased number of coefficients to estimate).
+
+5. Is it true to say that each multivarate functional curve at row $i$ and column $j$ is summarized by its vector of coefficients $c_{ij}$, and at the end of the day it is a probabilistic model that is putted on $c_{ij}$? (Justify your answer)
+#Answer: Yes it is true. Each multivariate functional curve in our matrix can be represented by a set of coefficients which we obtain in this case by the Multivariate Functional Principal Component Analysis (MFPCA) which represents the multivariate curves by a vector of principal scores into an eigenspace formed by multivariate eigenfunctions. The blocks of this set of coeffiecients are assumed to follow a certain distribution, Gaussian in this case. As such we can apply our probabilistic model in this case SEM-Gibbs algorithm for the blocks which are assumed to live in a low-dimensional functional latent subspace.
+
+6. Explain basically the strategy which is used to estimate the parameters. Why a standard EM algorithm cannot be used? How is the  the final paramters estimator $\hat\theta$ obtained? How are obtained the final estimators of the partition $(\hat z, \hat w)$?
+#Answer: The goal of co-clustering is to estimate the unknown row and column partitions. This is done using the maximum a posteriori rule based on the estimation of model parameter ?? maximizing the observed log-likelihood L(c;??) = logp(c;??). The EM algorithm is used in such a case to find a candidate ??hat for the maximum of the log-likelihood. The E step of the EM algorithm consists in maximizing the lower bound L over q for a given value of ??, that is, L is maximized for q???(z,w) = p(z,w|c,??). But the joint posterior distribution p(z,w|c,??) is not tractable in this case rendering EM not usable. To obtain the parameters, the SEM-Gibbs algorithm is run for a given number of iterations. After a burn-in period, the final estimation ??hat of the parameters is obtained by the mean of the sample distribution (without the burn-in iterations). Then, a new Gibbs sampler is used to sample (zhat, what) according to ??hat, and the final partition (zhat, what) is obtained by the marginal mode of this sample distribution.
+
+7. Which criterion is used to select the number of variables?
+#Answer: The ICL criterion is used since it relies on the completed data log-likelihood which is tractable.
+
+8. How such kind of model could also take into account spatial dependency? 
+#Answer: The model takes into account spatial dependency by introducing dependence between the rows (spatial) and/or the columns (temporal) of x (matrix). In our paper, for the row dependence, a 2-dimensional spatial trend is simulated, by assuming that the n observations are spatially distributed onto a square of size ???n? ???n.
+
+9. On the experimental setup p.24, the authors say that they have chosen a Fourier of size $7$. Would it make sense to choose a basis of size more than $7$? 
+#Answer: Since the Fourier basis was chosen because of existence of periodicity in some of the variables, the number 7 for the choice of the basis functions is reasonable given it can account for any variability in the 7 days which make up the week in which these variables were observed. Also, it should be noted that increasing the number of basis functions will be computationally expensive given the additional set of parameters to estimate and may also lead to overfitting given the additional noise that may be captured.
+
+## Analysis of the ATMO data
+
+Download the data available on https://github.com/UCA-MSI/AirQualityPACA_Data
+
+
+```{r}
+# Load our required packages
+library(funLBM)
+library(mclust)
+library(funData)
+library(MFPCA)
+library(blockmodels)
+```
+
+
+```{r}
+# Read in our data
+data = read.csv2("C:/Users/DELL/OneDrive/Desktop/data_polmet.csv")
+dim(data)
+head(data)
+```
+
+## 1 
+
+```{r}
+# Standardize each numeric column
+ncols <- c("max_NO2max", "moy_PM10avg", "max_O3max", "meanT", "meanP")
+data[ncols] <- lapply(data[ncols], scale)
+
+# Reshape the data into arrays
+n <- 357
+p <- 313
+T <- 7
+
+# Reshape the data into arrays with names
+arrays <- lapply(ncols, function(col) {
+  array(data[[col]], dim = c(n, p, T), dimnames = list(NULL, NULL, paste0("Week", 1:T)))
+})
+
+# Name the arrays
+names(arrays) <- ncols
+
+```
+
+
+## 2 
+
+We perform co-clustering separately for each of the 5 arrays using the function funLBM.
+
+```{r}
+out1 <- funLBM(arrays$max_NO2max, 2:6, 2:6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out1,type='proportions')
+```
+
+```{r}
+out2 <- funLBM(arrays$moy_PM10avg, 2:6, 2:6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out2,type='proportions')
+```
+
+```{r}
+out3 <- funLBM(arrays$max_O3max, 2:6, 2:6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out3,type='proportions')
+```
+
+```{r}
+out4 <- funLBM(arrays$meanT, 2:6, 2:6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out4,type='proportions')
+```
+
+
+```{r}
+out5 <- funLBM(arrays$meanP, 2:6, 2:6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out5,type='proportions')
+```
+
+```{r}
+# List of co-clusters
+co_cls <- list(out1, out2, out3, out4, out5)
+
+# Store ARI values
+aris <- matrix(0, nrow = length(co_cls), ncol = length(co_cls))
+
+# Calculate ARI for each pair of partitions
+for (i in 1:length(co_cls)) {
+  for (j in 1:length(co_cls)) {
+    
+    clusters_i <- co_cls[[i]]$col_clust
+    clusters_j <- co_cls[[j]]$col_clust
+    
+    ari <- adjustedRandIndex(clusters_i, clusters_j)
+    
+    aris[i, j] <- ari
+  }
+}
+
+print(aris)
+```
+We applied the funLBM algorithm to all the arrays separately. In line with the observations made in the paper, we initialize the algorithm with funFEM initialization as it performs better than the other two (k-means & random), we allow row (geographic regions) and column clusters (week) to range between 2 and 6 clusters and a basis function of 7 given there are 7 days in a week in which these variables are observed. These are all in line with the observations made in the paper. The mc.cores initialization helps with improving the compute time of the algorithm. We then compare the partitions obtained for the variables in a symmetric matrix using the adjustedRandindex (ARI) from the mclust package. We remember that an ARI of 1 indicates that the partititions (clusters) are perfectly similar and an ARI of 0 means that the partitions are random matches.
+From our ARI matrix, the rows and columns represent each of the 5 arrays respectively. Their entries in the cells represent the ARI between the partitions obtained from co-clustering the ith and jth arrays. For instance the value in cell (1,4) is approximately 0.15 and shows a slight similarity between the partitions of max_NO2max and meanT. Also the approximate value of 0.16 in cell (4,3) indicates a moderate similarity in the partitions from the co-clusters between meanT and max_O3max. Obviously the value of approximately 0.001 in cell (2,3) indicates dissimilarity in the partitions between moy_PM10avg and max_O3max and the diagonals are perfect (1s) because is a comparison among the variables to themselves.
+
+
+
+## 3
+
+We perform co-clustering of the multivariate functional data and compare our results with the results presented in the article
+```{r}
+out = funLBM(list(arrays$max_NO2max,arrays$moy_PM10avg,arrays$max_O3max,arrays$meanT,arrays$meanP), 6, 6, init = 'funFem', nbasis = 7, mc.cores = 4)
+plot(out,type='proportions')
+```
+
+```{r}
+# Extract row and column clusters
+row_cls <- out$row_clust
+col_cls <- out$col_clust
+
+# Frequency of row clusters 
+rcls_count <- table(row_cls)
+
+# Frequency of column clusters
+colcls_count <- table(col_cls)
+
+# Total rows and columns
+tot_rows <- sum(rcls_count)
+tot_cols <- sum(colcls_count)
+
+# Percentages
+rcls_percent <- prop.table(rcls_count) * 100
+colcls_percent <- prop.table(colcls_count) * 100
+
+
+cat("Row Clusters:\n")
+print(rcls_count)
+cat("Percentages:\n")
+print(rcls_percent)
+
+cat("\nColumn Clusters:\n")
+print(colcls_count)
+cat("Percentages:\n")
+print(colcls_percent)
+
+```
+We initialize our algorithm with funFEM as previously in keeping with the observations of the paper. We choose a partitions of 6 for both row and column clusters because we would like to see if we get the same results or better than those in the article. Also, it improves the compute time (we have limited compute power to choose a range of say 2:10) as it has already been established by the article that 6 clusters are actually what were recovered. And so we will try to compare the clusters that are actually obtained in our case with those of the article.
+Following co-clustering for both spatial (row) and temporal (column) dimensions, we discuss the results (6 partitions each). For spatial we observe cluster 5 has the highest number of zones/areas 91 in its cluster representing 25.49% and cluster 1 has the least number of zones 1 representing approximately 0.28%. Compared with the article's results which had cluster 1 (97 zones) being the highest and cluster 4 (22) being the lowest. For temporal, cluster 5 has the highest number of weeks 111 representing approximately 35.46% and cluster 2 has the least number of weeks 18 in its cluster representing approximately 5.75%. Compared with the article's results which has cluster 1 (70) as the cluster with the highest number of weeks and cluster 6 (27) as the cluster with the least number of weeks.
+
+
+
+## 4
+We perform co-clustering of the multivariate funtional data and compare our results with the results presented in the article
+
+
+
+We first define the argvals, then convert the arrays into a funData object and convert the funData object into a multiFunData format to be passed into the MFPCA to obtain the principal components. We chose M, the number of multivariate functional principal components to calculate to be 6 in keeping with our partitions.
+```{r}
+# Define the argvals
+argvals <- list(weeks = 1:313, days = 1:7)
+
+# Convert arrays to funData objects
+max_NO2max_funData <- funData(argvals = argvals, X = arrays$max_NO2max)
+moy_PM10avg_funData <- funData(argvals = argvals, X = arrays$moy_PM10avg)
+max_O3max_funData <- funData(argvals = argvals, X = arrays$max_O3max)
+meanT_funData <- funData(argvals = argvals, X = arrays$meanT)
+meanP_funData <- funData(argvals = argvals, X = arrays$meanP)
+
+# Combine funData objects into a list
+object <- list(max_NO2max_funData, moy_PM10avg_funData, max_O3max_funData, meanT_funData, meanP_funData)
+
+# Create multiFunData object
+mltfdta <- multiFunData(object)
+```
+
+```{r}
+# Define univariate expansions
+uniExpansions <- list(
+  list(type = "splines2D", bs = "cr", m = 10, k = 5),
+  list(type = "splines2D", bs = "cr", m = 10, k = 5),
+  list(type = "splines2D", bs = "cr", m = 10, k = 5),
+  list(type = "splines2D", bs = "cr", m = 10, k = 5),
+  list(type = "splines2D", bs = "cr", m = 10, k = 5)
+)
+
+# Perform MFPCA
+mf_pca <- MFPCA(mFData = mltfdta, M = 6, uniExpansions = uniExpansions)
+
+summary(mf_pca)
+```
+Principal Component 1 with an Eigenvalue of approximately 61.69 explains the most variance in the data approximately 48.47%. Principal Component 6 captures the least variance with an Eigenvalue of approximately 4.76 representing approximately 3.74%. Principal Components 1,2 and 3 cumulatively account for 85.41% of the total variance where as all the Principal Components account for 100% total variation in the data.
+
+
+To make the co-clustering on the expansion of the bases, we extract the scores from the mf_pca and calculate the distance among the samples. Then we convert these distances into a matrix and then into a list of matrices that will represent the adjacency matrix. Then we specify LBM as the type of node membership. We also retrieve the group with the highest ICL.
+
+```{r}
+scores <- mf_pca$scores
+
+dst <- dist(scores, method = "euclidean")
+
+dst_mat <- as.matrix(dst)
+
+# Convert to a list of matrices
+adj_list <- list(dst_mat)
+
+# Perform co-clustering
+co_clusters <- BM_gaussian_multivariate(membership_type = "LBM", adj = adj_list, verbosity = 6)
+
+co_clusters$estimate()
+
+# Number of groups with the highest ICL
+grp_hm <- which.max(co_clusters$ICL)
+
+```
+
+```{r}
+# group with the highest ICL
+grp_hm
+```
+
+## Conclusion: 
+We first read in our data, reshaped it into five arrays representing the five variables, Nitrogen dioxide, Particulate matter, Ozone, Temperature and Pressure. We performed co-clustering separately for the arrays and also did for the multivariate functional data comparing our results with that of the article. Then we performed multifunctional principal component analysis to retrieve the principal components and performed co-clustering on the expansion of the bases using the scores from the principal components to create our adjacency matrix and specifying Latent Block Model as the membership type for the nodes.
+
+
+
+
+
